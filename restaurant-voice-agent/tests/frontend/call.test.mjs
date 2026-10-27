@@ -12,7 +12,7 @@ const deferred = () => { let resolve, reject; const promise = new Promise((a, b)
 const ok = (body) => ({ ok: true, status: 200, json: async () => body });
 const bad = (status, body = {}) => ({ ok: false, status, json: async () => body });
 
-function harness({ supported = true, gum, route } = {}) {
+function harness({ supported = true, gum, route, restaurantId = 'resto-a' } = {}) {
   const ids = ['btn-call', 'btn-end', 'btn-cancel', 'status', 'status-detail', 'error', 'transcript', 'transcript-empty', 'remote-audio',
     'order-banner', 'order-text', 'order-link', 'support-warning', 'call-root'];
   const els = {};
@@ -22,7 +22,7 @@ function harness({ supported = true, gum, route } = {}) {
       addEventListener(t, f) { (l[t] ||= []).push(f); }, click() { (l.click || []).forEach((f) => f({})); },
       appendChild(c) { this.children.push(c); return c; }, pause() { this.paused = true; }, srcObject: null, muted: false };
   }
-  els['call-root'].dataset = { restaurantId: 'resto-a', menuUrl: MENU };
+  els['call-root'].dataset = { restaurantId, menuUrl: MENU };
 
   const log = { fetch: [], locations: [], pcs: [], streams: [], gum: 0 };
   class FakePC {
@@ -187,6 +187,16 @@ test('unsupported browser: Call disabled with a fallback message', async () => {
   assert.equal(h.els['btn-call'].disabled, true); assert.equal(h.els['support-warning'].hidden, false);
   h.els['btn-call'].click(); await flush();
   assert.equal(h.log.fetch.length, 0);
+});
+
+test('no restaurant id: Call stays disabled and never asks for the mic, builds a peer connection or sends a request', async () => {
+  for (const restaurantId of ['', '   ', null]) {
+    const h = harness({ restaurantId });
+    assert.equal(h.els['btn-call'].disabled, true, JSON.stringify(restaurantId));
+    h.els['btn-call'].click(); h.els['btn-call'].click(); await flush();   // the fake dispatches clicks even when disabled
+    assert.equal(h.log.gum, 0); assert.equal(h.log.pcs.length, 0); assert.equal(h.log.fetch.length, 0);
+    assert.equal(h.state(), 'idle'); assert.equal(h.els['btn-call'].disabled, true);
+  }
 });
 
 test('End Call: audio and mic stop, session.close sent once, actions disabled until session.closed, then everything is released', async () => {
