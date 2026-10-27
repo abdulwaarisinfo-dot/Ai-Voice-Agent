@@ -24,6 +24,9 @@
     banner: $('order-banner'), bannerText: $('order-text'), link: $('order-link'), warn: $('support-warning'),
   };
   const cfg = { restaurantId: root.dataset.restaurantId, menuUrl: root.dataset.menuUrl };
+  // No restaurant id => never start a call. The server renders a setup page without this script in that case;
+  // this is the second lock, so an empty id can never fall through to the server's default restaurant.
+  const configured = () => typeof cfg.restaurantId === 'string' && cfg.restaurantId.trim() !== '';
   const LABELS = { idle: 'Idle', connecting: 'Connecting', connected: 'Connected', ending: 'Ending', error: 'Error' };
   const CONNECT_TIMEOUT_MS = 20000, END_TIMEOUT_MS = 15000, ICE_TIMEOUT_MS = 10000, POLL_MS = 2000;
 
@@ -128,6 +131,7 @@
 
   // ---------- start ----------
   async function startCall() {
+    if (!configured()) return;                                   // no valid restaurant: no mic, no session request
     if (state !== 'idle' && state !== 'error') return;           // duplicate-click guard
     if (!supported()) { el.warn.hidden = false; return; }
     const c = { gen: ++gen, id: randomId(), secret: null, pc: null, dc: null, stream: null, abort: null,
@@ -295,6 +299,7 @@
   el.cancel.addEventListener('click', cancelClicked);
   window.addEventListener('pagehide', () => { if (ctx && !ctx.disposed) teardown(ctx, { notify: true }); });
   setState('idle');
+  if (!configured()) el.call.disabled = true;                              // after setState, which would re-enable it
   if (!supported()) { el.warn.hidden = false; el.call.disabled = true; }   // after setState, which would re-enable it
   if (window.__CALL_TEST_HOOK__) window.__CALL_TEST_HOOK__({ getState: () => state, getGen: () => gen });
 })();
