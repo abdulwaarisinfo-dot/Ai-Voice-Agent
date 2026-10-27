@@ -1,11 +1,38 @@
 """HTML pages. Opening any of them never contacts OpenAI or creates a session."""
-from fastapi import APIRouter, Query, Request
+import logging
+
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from ..services import order_service
 from .deps import resolve_restaurant
 
 router = APIRouter()
+log = logging.getLogger("pages")
+
+
+def _page_restaurant(request: Request, restaurant_id: str | None) -> dict | None:
+    """Restaurant for an HTML page, or None when the *implicit default* restaurant has no record yet.
+
+    Only that one case is softened into a setup page. An explicitly requested id that does not exist is
+    still a 404, and database errors (timeouts, auth failures, ...) are not caught here: they stay 500s
+    instead of being disguised as "restaurant not configured".
+    """
+    try:
+        return resolve_restaurant(request, restaurant_id)
+    except HTTPException as exc:
+        if exc.status_code != 404 or restaurant_id:
+            raise
+        state = request.app.state
+        log.warning("Default restaurant %r not found in database %r; rendering the setup page",
+                    state.settings.default_restaurant_id, getattr(state.db, "name", "?"))
+        return None
+
+
+def _setup_page(request: Request, page: str):
+    response = _render(request, "restaurant_setup.html", page=page)
+    response.headers["Cache-Control"] = "no-store"  # must not outlive the fix
+    return response
 
 
 def _render(request: Request, name: str, status: int = 200, **ctx):
@@ -19,13 +46,17 @@ def home():
 
 @router.get("/call", response_class=HTMLResponse)
 def call_page(request: Request, restaurant_id: str | None = Query(None, max_length=64)):
-    restaurant = resolve_restaurant(request, restaurant_id)
+    restaurant = _page_restaurant(request, restaurant_id)
+    if restaurant is None:
+        return _setup_page(request, "call")
     return _render(request, "call.html", restaurant=restaurant, page="call")
 
 
 @router.get("/menu", response_class=HTMLResponse)
 def menu_page(request: Request, restaurant_id: str | None = Query(None, max_length=64)):
-    restaurant = resolve_restaurant(request, restaurant_id)
+    restaurant = _page_restaurant(request, restaurant_id)
+    if restaurant is None:
+        return _setup_page(request, "menu")
     return _render(request, "menu.html", restaurant=restaurant, page="menu")
 
 
