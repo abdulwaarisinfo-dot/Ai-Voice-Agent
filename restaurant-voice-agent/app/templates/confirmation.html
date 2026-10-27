@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Order confirmation - {{ restaurant.name }}{% endblock %}
+{% block content %}
+{% if order %}
+<section class="confirm">
+  <h1>Order confirmed</h1>
+  <p class="ref">Reference <strong>{{ order.reference }}</strong></p>
+  <dl class="meta">
+    <dt>Restaurant</dt><dd>{{ order.restaurant_name }}</dd>
+    <dt>Status</dt><dd>{{ order.status|replace('_', ' ')|capitalize }}</dd>
+    <dt>{{ 'Delivery' if order.fulfillment == 'delivery' else 'Pickup' }}</dt>
+    <dd>{% if order.fulfillment == 'delivery' %}{{ order.delivery_address }}{% else %}Collect from the restaurant{% endif %}</dd>
+    {% if order.customer_name %}<dt>Name</dt><dd>{{ order.customer_name }}</dd>{% endif %}
+  </dl>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th scope="col">Item</th><th scope="col" class="num">Qty</th><th scope="col" class="num">Price</th><th scope="col" class="num">Total</th></tr></thead>
+      <tbody>
+      {% for l in order.lines %}
+        <tr><td>{{ l.name }}{% if l.customizations %}<br><span class="muted">{{ l.customizations|join(', ') }}</span>{% endif %}</td>
+            <td class="num">{{ l.quantity }}</td><td class="num">{{ l.unit_price }}</td><td class="num">{{ l.line_total }}</td></tr>
+      {% endfor %}
+      </tbody>
+      <tfoot>
+        <tr><th scope="row" colspan="3">Subtotal</th><td class="num">{{ order.subtotal }}</td></tr>
+        {% if order.fulfillment == 'delivery' %}<tr><th scope="row" colspan="3">Delivery fee</th><td class="num">{{ order.delivery_fee }}</td></tr>{% endif %}
+        <tr class="grand"><th scope="row" colspan="3">Total</th><td class="num">{{ order.total }}</td></tr>
+      </tfoot>
+    </table>
+  </div>
+  <p><a class="btn primary" href="/menu?restaurant_id={{ order.restaurant_id|urlencode }}">Back to menu</a></p>
+</section>
+{% else %}
+<section class="confirm">
+  <h1>Order not found</h1>
+  <p>We couldn't find a confirmed order for this link. An order only appears here after it has been confirmed and saved.</p>
+  <p><a class="btn primary" href="/menu?restaurant_id={{ restaurant._id|urlencode }}">Back to menu</a></p>
+</section>
+{% endif %}
+{% endblock %}

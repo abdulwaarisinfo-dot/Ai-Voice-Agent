@@ -1,0 +1,54 @@
+:root{
+  --ink:#16251f; --muted:#5b6b64; --bg:#f1f4f2; --surface:#fff; --line:#d5ddd9;
+  --brand:#1b4d3e; --brand-ink:#fff; --warn:#8a5a00; --warn-bg:#fff4d6; --ok:#17663f; --bad:#a3231b; --bad-bg:#fde8e6;
+  --radius:10px;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.skip{position:absolute;left:-999px}.skip:focus{left:8px;top:8px;background:#fff;padding:8px;z-index:9}
+header.site{display:flex;flex-wrap:wrap;gap:12px;justify-content:space-between;align-items:center;padding:14px 20px;background:var(--brand);color:var(--brand-ink)}
+header.site a{color:inherit;text-decoration:none}
+.brand{font-weight:700;font-size:1.15rem}
+nav a{margin-left:16px;padding:4px 0;border-bottom:2px solid transparent}
+nav a[aria-current=page],nav a:hover{border-color:currentColor}
+main{max-width:760px;margin:0 auto;padding:24px 20px 64px}
+h1{font-size:1.9rem;line-height:1.2;margin:.2em 0 .4em} h2{font-size:1.2rem;margin-top:2rem}
+.lede{max-width:60ch;color:var(--muted)}
+.muted{color:var(--muted)}
+a{color:var(--brand)}
+:focus-visible{outline:3px solid #e0a100;outline-offset:2px}
+.btn{font:inherit;padding:.65em 1.2em;border-radius:var(--radius);border:1px solid var(--brand);background:var(--surface);color:var(--brand);cursor:pointer;text-decoration:none;display:inline-block}
+.btn.primary{background:var(--brand);color:var(--brand-ink)}
+.btn.danger{background:var(--bad);border-color:var(--bad);color:#fff}
+.btn.big{font-size:1.2rem;padding:.9em 1.8em;min-width:12rem}
+.btn.small{padding:.25em .7em;font-size:.9rem}
+.btn[disabled]{opacity:.55;cursor:not-allowed}
+.controls{display:flex;flex-wrap:wrap;gap:12px;margin:18px 0}
+.status-row{display:flex;align-items:center;gap:12px;margin-top:18px;min-height:2rem}
+.status{display:inline-flex;align-items:center;gap:8px;padding:.25em .8em;border-radius:99px;font-weight:600;background:#e4e9e6}
+.status::before{content:"";width:.6em;height:.6em;border-radius:50%;background:#7b8b84}
+.status-connecting{background:var(--warn-bg);color:var(--warn)}.status-connecting::before{background:#d89b00}
+.status-connected{background:#dff3e8;color:var(--ok)}.status-connected::before{background:var(--ok)}
+.status-ending{background:var(--warn-bg);color:var(--warn)}.status-ending::before{background:#d89b00}
+.status-error{background:var(--bad-bg);color:var(--bad)}.status-error::before{background:var(--bad)}
+.alert{background:var(--bad-bg);color:var(--bad);padding:12px 14px;border-radius:var(--radius);border:1px solid #f1b9b4}
+.banner{background:#dff3e8;border:1px solid #a9d9bd;border-radius:var(--radius);padding:14px 16px;margin:12px 0}
+.transcript{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:12px 14px;min-height:7rem;max-height:22rem;overflow:auto}
+.line{margin:.4em 0}.line .who{font-weight:600;margin-right:.4em}.line.you .who{color:var(--brand)}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:12px 14px;margin:10px 0;display:flex;gap:12px;justify-content:space-between;align-items:flex-start;flex-wrap:wrap}
+.card.off{opacity:.65}
+.card h3{margin:0;font-size:1.05rem}.card p{margin:.2em 0}
+.price{font-weight:700;white-space:nowrap}
+.badge{font-size:.8rem;padding:.1em .6em;border-radius:99px;background:#dff3e8;color:var(--ok)}.badge.off{background:#eee;color:#555}
+.owner{margin-top:2.5rem;padding-top:1rem;border-top:1px solid var(--line)}
+.stack{display:grid;gap:10px;max-width:420px}
+label{display:grid;gap:4px;font-weight:600}label.check{display:flex;gap:8px;align-items:center}
+input{font:inherit;padding:.5em .6em;border:1px solid #9aa8a1;border-radius:8px;background:#fff}
+.row{display:flex;gap:10px;flex-wrap:wrap}
+.confirm .ref{font-size:1.2rem}
+.meta{display:grid;grid-template-columns:max-content 1fr;gap:4px 16px}.meta dt{font-weight:600}.meta dd{margin:0}
+.table-wrap{overflow-x:auto}table{border-collapse:collapse;width:100%;background:var(--surface)}
+th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left}.num{text-align:right;white-space:nowrap}
+tr.grand th,tr.grand td{font-size:1.1rem;font-weight:700}
+@media (max-width:520px){.btn.big{width:100%}nav a{margin-left:10px}}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}

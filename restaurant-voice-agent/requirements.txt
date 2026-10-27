@@ -1,0 +1,15 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+jinja2>=3.1
+pymongo>=4.8
+openai>=3.39        # needs the `live` resource (GPT-Live)
+websockets>=14      # sideband WebSocket (additional_headers argument)
+pydantic>=2.7
+pydantic-settings>=2.3
+itsdangerous>=2.2   # signed session cookie for owner login
+python-multipart>=0.0.9
+# tests
+pytest>=8
+pytest-asyncio>=0.23
+httpx>=0.27
+mongomock>=4.1

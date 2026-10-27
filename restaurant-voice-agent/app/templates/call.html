@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Order by voice - {{ restaurant.name }}{% endblock %}
+{% block content %}
+<section id="call-root" class="call"
+         data-restaurant-id="{{ restaurant._id }}"
+         data-menu-url="/menu?restaurant_id={{ restaurant._id|urlencode }}">
+  <h1>Order by voice</h1>
+  <p class="lede">Talk to {{ restaurant.name }}'s ordering assistant in English or Urdu. This is a voice call in your browser, not a telephone call. Nothing is ordered until you clearly confirm the read-back.</p>
+
+  <p id="support-warning" class="alert" role="alert" hidden>
+    This browser can't start a voice call (it needs microphone access over HTTPS or localhost and WebRTC support).
+    You can still <a href="/menu?restaurant_id={{ restaurant._id|urlencode }}">view the menu</a>.
+  </p>
+
+  <div class="status-row">
+    <span id="status" class="status status-idle" role="status" aria-live="polite">Idle</span>
+    <span id="status-detail" class="muted"></span>
+  </div>
+
+  <div class="controls">
+    <button id="btn-call" type="button" class="btn primary big">Call restaurant</button>
+    <button id="btn-end" type="button" class="btn danger big" hidden disabled>End call</button>
+    <button id="btn-cancel" type="button" class="btn">Cancel</button>
+  </div>
+
+  <div id="error" class="alert" role="alert" hidden></div>
+
+  <div id="order-banner" class="banner" hidden>
+    <p id="order-text"></p>
+    <a id="order-link" class="btn primary" href="#">View order confirmation</a>
+  </div>
+
+  <h2>Conversation</h2>
+  <div id="transcript" class="transcript" aria-live="polite" aria-label="Conversation transcript">
+    <p id="transcript-empty" class="muted">The live transcript appears here once you are connected.</p>
+  </div>
+  <audio id="remote-audio" autoplay></audio>
+
+  <p class="muted"><a href="/menu?restaurant_id={{ restaurant._id|urlencode }}">View the menu</a></p>
+</section>
+<script src="/static/js/call.js"></script>
+{% endblock %}

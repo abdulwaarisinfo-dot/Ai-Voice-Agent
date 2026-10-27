@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Menu - {{ restaurant.name }}{% endblock %}
+{% block content %}
+<section id="menu-root" data-restaurant-id="{{ restaurant._id }}">
+  <h1>Menu</h1>
+  <p id="menu-status" class="muted" role="status">Loading menu…</p>
+  <div id="menu-list"></div>
+
+  <section class="owner" aria-labelledby="owner-h">
+    <h2 id="owner-h">Owner tools</h2>
+    <form id="login-form" class="stack">
+      <p class="muted">Sign in to add or edit items and mark them unavailable.</p>
+      <label>Password <input id="login-password" type="password" autocomplete="current-password" required></label>
+      <button class="btn" type="submit">Sign in</button>
+      <p id="login-error" class="alert" role="alert" hidden></p>
+    </form>
+    <div id="owner-panel" hidden>
+      <p>Signed in. <button id="logout" class="btn small" type="button">Sign out</button></p>
+      <form id="item-form" class="stack">
+        <h3 id="item-form-title">Add item</h3>
+        <input type="hidden" id="f-id">
+        <label>Name <input id="f-name" maxlength="80" required></label>
+        <label>Description <input id="f-desc" maxlength="300"></label>
+        <label>Category <input id="f-cat" maxlength="40" required></label>
+        <label>Price (<span id="f-currency"></span>) <input id="f-price" type="number" min="0" step="0.01" required></label>
+        <label>Customization options (comma separated, optional) <input id="f-opts"></label>
+        <label class="check"><input id="f-avail" type="checkbox" checked> Available</label>
+        <div class="row">
+          <button class="btn primary" type="submit">Save item</button>
+          <button class="btn" type="button" id="f-reset">Clear</button>
+        </div>
+        <p id="item-error" class="alert" role="alert" hidden></p>
+      </form>
+    </div>
+  </section>
+  <p><a class="btn primary" href="/call?restaurant_id={{ restaurant._id|urlencode }}">Order by voice</a></p>
+</section>
+<script src="/static/js/menu.js"></script>
+{% endblock %}
