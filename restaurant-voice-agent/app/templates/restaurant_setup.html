@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Restaurant not configured</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="site">
+    <a class="brand" href="/call">Voice ordering</a>
+    <nav aria-label="Main">
+      <a href="/call" {% if page == 'call' %}aria-current="page"{% endif %}>Order by voice</a>
+      <a href="/menu" {% if page == 'menu' %}aria-current="page"{% endif %}>Menu</a>
+    </nav>
+  </header>
+  <main id="main">
+    <section id="setup-root" class="call" data-configured="false">
+      <h1>Restaurant not configured</h1>
+      <p class="lede">No restaurant has been set up for this page yet, so {% if page == 'call' %}voice ordering{% else %}the menu{% endif %} is not available. Nothing can be ordered until the restaurant owner or site administrator finishes setup.</p>
+      <p class="alert" role="alert">This restaurant is not configured. Please check back later.</p>
+      {% if page == 'call' %}
+      <div class="controls">
+        <button id="btn-call" type="button" class="btn primary big" disabled aria-disabled="true">Call restaurant</button>
+      </div>
+      {% endif %}
+    </section>
+  </main>
+</body>
+</html>
