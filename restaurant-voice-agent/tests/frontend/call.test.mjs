@@ -74,6 +74,7 @@ function harness({ supported = true, gum, route, restaurantId = 'resto-a' } = {}
   vm.runInContext(SRC, sandbox);
   const started = (pc) => pc.dc.onmessage({ data: JSON.stringify({ type: 'session.started' }) });
   return { els, log, state: () => hook.getState(), started, pc: () => log.pcs.at(-1), pagehide: () => (listeners.pagehide || []).forEach((f) => f()),
+    fire: (type, ev = {}) => (listeners[type] || []).forEach((f) => f(ev)),
     paths: () => log.fetch.map((f) => f.path.split('?')[0]), sessionCalls: () => log.fetch.filter((f) => f.path === '/api/call/session') };
 }
 
@@ -267,4 +268,49 @@ test('ending a call with no confirmed order does not navigate and submits nothin
   h.pc().dc.onmessage({ data: JSON.stringify({ type: 'session.closed' }) }); await flush();
   assert.equal(h.state(), 'idle'); assert.deepEqual(h.log.locations, []);
   assert.ok(h.paths().every((p) => p.startsWith('/api/call/')));
+});
+
+// ---------- termination hardening ----------
+test('offline while connected: mic + peer released at once, end is sent, and retried when the network returns', async () => {
+  let down = true;
+  const h = harness({ route: (e) => (e.path === '/api/call/end' && down ? Promise.reject(new TypeError('network')) : undefined) });
+  h.els['btn-call'].click(); await flush(); h.started(h.pc()); await flush();
+  assert.equal(h.state(), 'connected');
+  h.fire('offline'); await flush();
+  assert.equal(h.state(), 'error');
+  assert.equal(h.log.streams[0].tracks[0].stopped, true); assert.equal(h.pc().closed, true);
+  assert.equal(h.paths().filter((p) => p === '/api/call/end').length, 1);
+  down = false;
+  h.fire('online'); await flush();
+  assert.equal(h.paths().filter((p) => p === '/api/call/end').length, 2);   // retried once
+  h.fire('online'); await flush();
+  assert.equal(h.paths().filter((p) => p === '/api/call/end').length, 2);   // and not again
+});
+
+test('offline while still connecting cancels on the server and releases the microphone', async () => {
+  const gate = deferred();
+  const h = harness({ route: (e) => (e.path === '/api/call/session' ? gate.promise : undefined) });
+  h.els['btn-call'].click(); await flush();
+  h.fire('offline'); await flush();
+  assert.equal(h.state(), 'error'); assert.equal(h.log.streams[0].tracks[0].stopped, true);
+  assert.ok(h.paths().includes('/api/call/cancel'));
+  gate.resolve({ ok: true, status: 200, json: async () => ({ call_secret: 's', transport: { sdp: 'v=0 a' } }) }); await flush();
+  assert.equal(h.state(), 'error');                                          // late answer never resurrects the call
+});
+
+test('offline while idle does nothing; a bfcache restore of a dead call returns to idle', async () => {
+  const h = harness();
+  h.fire('offline'); assert.equal(h.state(), 'idle'); assert.equal(h.log.fetch.length, 0);
+  h.els['btn-call'].click(); await flush(); h.started(h.pc()); await flush();
+  h.pagehide(); await flush();
+  h.fire('pageshow', { persisted: true }); await flush();
+  assert.equal(h.state(), 'idle');
+});
+
+test('remote peer failure releases everything and notifies the server exactly once', async () => {
+  const h = harness();
+  h.els['btn-call'].click(); await flush(); h.started(h.pc()); await flush();
+  const dc = h.pc().dc, close = dc.onclose; close(); close(); await flush();   // repeated close signals
+  assert.equal(h.state(), 'error'); assert.equal(h.pc().closed, true);
+  assert.equal(h.paths().filter((p) => p === '/api/call/end').length, 1);
 });
