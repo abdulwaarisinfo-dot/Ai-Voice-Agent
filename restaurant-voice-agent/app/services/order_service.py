@@ -148,6 +148,8 @@ def _reload_lines(order: dict) -> list[OrderLineIn]:
 
 def set_items(db, restaurant_id: str, call_id: str, lines: list[OrderLineIn]) -> dict:
     restaurant = get_restaurant(db, restaurant_id)
+    if restaurant is None:  # archived or unknown: no new order activity
+        raise OrderError("unknown_restaurant", "Restaurant not found.")
     order = _get_or_create(db, restaurant, call_id)
     if order["status"] == "confirmed":
         raise OrderError("order_already_confirmed", "This order is already confirmed and cannot be changed. A new call is needed for another order.")
@@ -158,6 +160,8 @@ def set_items(db, restaurant_id: str, call_id: str, lines: list[OrderLineIn]) ->
 
 def set_customer(db, restaurant_id: str, call_id: str, data: CustomerIn) -> dict:
     restaurant = get_restaurant(db, restaurant_id)
+    if restaurant is None:  # archived or unknown: no new order activity
+        raise OrderError("unknown_restaurant", "Restaurant not found.")
     order = _get_or_create(db, restaurant, call_id)
     if order["status"] == "confirmed":
         raise OrderError("order_already_confirmed", "This order is already confirmed and cannot be changed.")
@@ -187,6 +191,8 @@ def _save(db, order: dict, changes: dict) -> dict:
 def request_confirmation(db, restaurant_id: str, call_id: str) -> dict:
     """Step 1: re-price from the DB, verify completeness, fix the quote the customer will hear."""
     restaurant = get_restaurant(db, restaurant_id)
+    if restaurant is None:  # archived or unknown: no new order activity
+        raise OrderError("unknown_restaurant", "Restaurant not found.")
     order = get_order_for_call(db, restaurant_id, call_id)
     if order is None or not order["lines"]:
         raise OrderError("empty_order", "No items have been added yet.")
@@ -214,6 +220,8 @@ def request_confirmation(db, restaurant_id: str, call_id: str) -> dict:
 def confirm_order(db, restaurant_id: str, call_id: str, presented_hash: str) -> dict:
     """Step 2: the only path to `confirmed`."""
     restaurant = get_restaurant(db, restaurant_id)
+    if restaurant is None:  # archived or unknown: no new order activity
+        raise OrderError("unknown_restaurant", "Restaurant not found.")
     order = get_order_for_call(db, restaurant_id, call_id)
     if order is None:
         raise OrderError("no_order", "There is no order to confirm.")
@@ -266,7 +274,7 @@ def get_confirmed_order(db, secret: str, reference: str, token: str | None) -> d
     import hmac
     if not hmac.compare_digest(token, order_access_token(secret, order["_id"])):
         return None
-    restaurant = get_restaurant(db, order["restaurant_id"])
+    restaurant = get_restaurant(db, order["restaurant_id"], include_archived=True)  # history stays readable
     view = order_view(order)
     view["restaurant_name"] = restaurant["name"] if restaurant else "Restaurant"
     view["restaurant_id"] = order["restaurant_id"]
