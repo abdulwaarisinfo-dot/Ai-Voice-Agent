@@ -9,6 +9,7 @@ Flow
 Audio never touches this server.
 """
 import asyncio
+import collections
 import json
 import logging
 import secrets
@@ -81,6 +82,7 @@ class CallController:
     def __init__(self, db, restaurant_id: str, call_id: str):
         self.db, self.restaurant_id, self.call_id = db, restaurant_id, call_id
         self.closed = False
+        self.terminating = False  # set by the service the moment shutdown begins: no tool may run after this
         self.usage = None
         self.awaiting_customer_reply = False  # read-back happened, customer has not spoken since
         self.customer_replied = False
@@ -96,6 +98,9 @@ class CallController:
             inner = event.get("event") or {}
             item = inner.get("item") or {}
             if inner.get("type") == "response.output_item.done" and item.get("type") == "function_call":
+                if self.closed or self.terminating:  # shutdown in progress: no tool run, no paid response.create
+                    log.info("ignored tool call during shutdown")
+                    return []
                 return self._run_function_call(item)
         elif etype == "session.closed":
             self.closed = True
@@ -119,6 +124,8 @@ class CallController:
 
     # ----- tools -----
     def execute_tool(self, name: str, raw_args: str) -> dict:
+        if self.closed or self.terminating:
+            return {"ok": False, "error_code": "call_ended", "message": "The call has ended. Nothing was changed."}
         try:
             args = json.loads(raw_args) if raw_args else {}
             if not isinstance(args, dict):
@@ -179,9 +186,13 @@ class CallState:
     session_id: str | None = None
     outbox: asyncio.Queue = field(default_factory=asyncio.Queue)
     attached: asyncio.Event = field(default_factory=asyncio.Event)
+    wake: asyncio.Event = field(default_factory=asyncio.Event)  # set when termination begins
     attach_failed: bool = False
     cancel_requested: bool = False
     end_requested: bool = False
+    terminating: bool = False        # one-way latch: once True the call only closes, never works
+    term_reason: str | None = None
+    close_sent: bool = False         # session.close actually written to the provider socket
     greeted: bool = False
     started: float = field(default_factory=time.monotonic)
     last_seen: float = field(default_factory=time.monotonic)
@@ -195,9 +206,67 @@ def _default_connect(url: str, headers: dict):
 
 
 class LiveService:
+    """Lifecycle of every call. All state changes happen on the event loop (never from worker threads).
+
+    Provider close: the ONLY supported way to end a GPT-Live session is the `session.close` event on the
+    session's sideband socket (the same event the browser may send on its data channel). Dropping the WebRTC
+    peer, aborting an HTTP request, or POST /api/call/end alone does not close it server-side. So every path
+    below ends in `_begin_termination` -> watchdog writes `session.close` on the sideband; if the sideband is
+    lost, `_force_close_provider` re-attaches just to send it.
+    """
+    READY_TIMEOUT_S = 45         # browser never confirmed `ready` -> close (the browser itself gives up at 20s)
+    RESTAURANT_CHECK_S = 10      # fallback for restaurants archived by another worker process
+    SESSION_CLOSED_WAIT_S = 15   # wait for session.closed (usage) after session.close
+    CLOSE_RETRIES = 2            # re-attach attempts when the sideband is lost
+    CLOSE_RETRY_DELAY_S = 0.3
+    FORCE_CLOSE_WAIT_S = 5
+    TOMBSTONE_TTL_S = 900
+    TOMBSTONE_MAX = 2048
+
     def __init__(self, db, settings: Settings, client, connect=_default_connect):
         self.db, self.settings, self.client, self._connect = db, settings, client, connect
         self.calls: dict[str, CallState] = {}
+        self._cancelled: "collections.OrderedDict[str, float]" = collections.OrderedDict()  # cancel-before-create
+        self._bg: set[asyncio.Task] = set()
+
+    # ----- helpers -----
+    def _spawn(self, coro) -> asyncio.Task:
+        task = asyncio.create_task(coro)
+        self._bg.add(task)
+        task.add_done_callback(self._bg.discard)
+        return task
+
+    def _remember_cancel(self, call_id: str) -> None:
+        now = time.monotonic()
+        self._cancelled[call_id] = now
+        while self._cancelled and (len(self._cancelled) > self.TOMBSTONE_MAX
+                                   or now - next(iter(self._cancelled.values())) > self.TOMBSTONE_TTL_S):
+            self._cancelled.popitem(last=False)
+
+    def _was_cancelled(self, call_id: str) -> bool:
+        ts = self._cancelled.get(call_id)
+        return ts is not None and time.monotonic() - ts <= self.TOMBSTONE_TTL_S
+
+    def _begin_termination(self, call: CallState, reason: str) -> bool:
+        """Idempotent latch. Returns True only for the first caller. After this no tool runs and nothing
+        queued (greeting, tool results, response.create) is ever sent: only `session.close`."""
+        if call.terminating:
+            return False
+        call.terminating, call.term_reason = True, reason
+        call.controller.terminating = True
+        while not call.outbox.empty():
+            call.outbox.get_nowait()
+        call.wake.set()
+        return True
+
+    def _restaurant_active(self, restaurant_id: str) -> bool:
+        return menu_service.get_restaurant(self.db, restaurant_id) is not None
+
+    async def _db_update(self, call_id: str, changes: dict) -> None:
+        try:
+            await asyncio.to_thread(self.db.voice_sessions.update_one, {"_id": call_id}, {"$set": changes})
+        except Exception as exc:  # a database hiccup must never keep a paid session open
+            log.error("voice_sessions update failed: %s", type(exc).__name__)
 
     # ----- lifecycle -----
     def active_count(self) -> int:
@@ -207,13 +276,15 @@ class LiveService:
         """Returns (call_secret, sdp_answer). Raises CallError."""
         if not self.settings.openai_api_key:
             raise CallError(503, "Voice service is not configured.")
+        if self._was_cancelled(call_id):  # the browser's cancel overtook this request
+            raise CallError(409, "Call was cancelled.")
         if call_id in self.calls:
             raise CallError(409, "Call already exists.")
         if self.active_count() >= self.settings.max_concurrent_calls:
             raise CallError(503, "All lines are busy. Please try again shortly.")
         secret = secrets.token_urlsafe(24)
         call = CallState(call_id, restaurant, CallController(self.db, restaurant["_id"], call_id))
-        self.calls[call_id] = call
+        self.calls[call_id] = call  # reserves the concurrency slot; released only by _finish
         try:
             await asyncio.to_thread(self.db.voice_sessions.insert_one, {
                 "_id": call_id, "restaurant_id": restaurant["_id"], "call_secret_hash": hash_token(secret),
@@ -221,27 +292,59 @@ class LiveService:
         except DuplicateKeyError:
             self.calls.pop(call_id, None)
             raise CallError(409, "Call already exists.")
+        except BaseException as exc:
+            self.calls.pop(call_id, None)  # never leak the slot, even if this request is cancelled
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            log.error("voice_sessions insert failed: %s", type(exc).__name__)
+            raise CallError(503, "The voice service is unavailable right now.")
+
+        # The provider call runs as its own task: if this HTTP request is cancelled (browser aborted, tab closed)
+        # the creation still completes, and _adopt_late_session closes whatever it created.
+        create_task = asyncio.ensure_future(self.client.live.create(
+            session=build_session_config(self.settings, restaurant), transport={"type": "webrtc", "sdp": sdp}))
         try:
-            result = await self.client.live.create(
-                session=build_session_config(self.settings, restaurant), transport={"type": "webrtc", "sdp": sdp})
+            result = await asyncio.shield(create_task)
             call.session_id, answer = result.session.id, result.transport.sdp
+        except asyncio.CancelledError:
+            self._begin_termination(call, "client_disconnected")
+            create_task.add_done_callback(lambda fut: self._spawn(self._adopt_late_session(call, fut)))
+            raise
         except Exception as exc:  # log the class/status only: never the request, key or SDP
             log.error("live session creation failed: %s status=%s", type(exc).__name__, getattr(exc, "status_code", None))
             await self._finish(call, "failed", "create_failed")
             raise CallError(502, "The voice service is unavailable right now.")
-        call.status = "connecting"
-        await asyncio.to_thread(self.db.voice_sessions.update_one, {"_id": call_id}, {"$set": {"openai_session_id": call.session_id, "status": "connecting"}})
-        call.task = asyncio.create_task(self._run_sideband(call))
+
         try:
-            await asyncio.wait_for(call.attached.wait(), 12)
-        except asyncio.TimeoutError:
-            call.attach_failed = True
-        if call.attach_failed:
-            call.cancel_requested = True
-            raise CallError(503, "The ordering system could not be reached. Please try again.")
-        if call.cancel_requested:  # Cancel arrived while OpenAI was still creating the session
-            raise CallError(409, "Call was cancelled.")
+            if not call.terminating:
+                call.status = "connecting"
+            await self._db_update(call_id, {"openai_session_id": call.session_id,
+                                            "status": call.status if call.status != "creating" else "connecting"})
+            call.task = self._spawn(self._run_sideband(call))
+            if call.terminating:  # cancelled / restaurant archived while OpenAI was creating the session
+                raise CallError(409, "Call was cancelled.")  # the sideband task will close the new session
+            try:
+                await asyncio.wait_for(call.attached.wait(), 12)
+            except asyncio.TimeoutError:
+                call.attach_failed = True
+            if call.attach_failed:
+                self._begin_termination(call, "attach_failed")
+                raise CallError(503, "The ordering system could not be reached. Please try again.")
+            if call.terminating:
+                raise CallError(409, "Call was cancelled.")
+        except asyncio.CancelledError:
+            self._begin_termination(call, "client_disconnected")  # sideband task (already spawned) closes it
+            raise
         return secret, answer
+
+    async def _adopt_late_session(self, call: CallState, fut: "asyncio.Future") -> None:
+        """The request that asked for this session is gone. Close whatever OpenAI created for it."""
+        if fut.cancelled() or fut.exception() is not None:
+            await self._finish(call, "failed" if not fut.cancelled() else "cancelled", "create_failed" if not fut.cancelled() else "cancelled_by_user")
+            return
+        call.session_id = fut.result().session.id
+        await self._db_update(call.call_id, {"openai_session_id": call.session_id})
+        await self._run_sideband(call)  # terminating is already latched: it attaches only to send session.close
 
     def authenticate(self, call_id: str, secret: str) -> dict | None:
         """Returns the voice_sessions doc if the call secret matches (constant-time), else None."""
@@ -258,10 +361,12 @@ class LiveService:
         return call.status if call else doc["status"]
 
     def request_cancel(self, call_id: str) -> bool:
+        self._remember_cancel(call_id)  # also covers a cancel that arrives BEFORE its /session request
         call = self.calls.get(call_id)
         if call is None:
             return False
         call.cancel_requested = True
+        self._begin_termination(call, "cancelled")
         return True
 
     def request_end(self, call_id: str) -> bool:
@@ -269,15 +374,26 @@ class LiveService:
         if call is None:
             return False
         call.end_requested = True
+        self._begin_termination(call, "ended_by_user")
         return True
+
+    def terminate_restaurant(self, restaurant_id: str, reason: str = "restaurant_unavailable") -> int:
+        """Close every live call of a restaurant that was archived. Returns how many were told to close."""
+        n = 0
+        for call in list(self.calls.values()):
+            if call.restaurant["_id"] == restaurant_id and self._begin_termination(call, reason):
+                n += 1
+        return n
 
     async def mark_ready(self, call_id: str) -> None:
         """Browser saw session.started. Only now do we call the session active and send the greeting."""
         call = self.calls.get(call_id)
-        if call is None or call.greeted or call.status in ("ended", "failed", "cancelled"):
+        if call is None or call.greeted or call.terminating or call.status in ("ended", "failed", "cancelled"):
             return
         call.greeted, call.status = True, "active"
-        await asyncio.to_thread(self.db.voice_sessions.update_one, {"_id": call_id}, {"$set": {"status": "active"}})
+        await self._db_update(call_id, {"status": "active"})
+        if call.terminating:  # latched while the DB write was in flight: no greeting (it would be paid audio)
+            return
         call.outbox.put_nowait({
             "type": "session.commentary.append", "event_id": "greeting_1", "delegation_id": None,
             "content": f"Greet the customer warmly as the voice ordering assistant for {call.restaurant['name']} and ask how you can help."})
@@ -286,7 +402,8 @@ class LiveService:
     async def _run_sideband(self, call: CallState) -> None:
         url = SIDEBAND_URL.format(session_id=call.session_id)
         headers = {"Authorization": f"Bearer {self.settings.openai_api_key}"}
-        final = ("ended", "session_closed")
+        final = ("ended", None)
+        shutdown = False
         try:
             async with self._connect(url, headers) as ws:
                 call.attached.set()
@@ -299,52 +416,113 @@ class LiveService:
                         except (TypeError, ValueError):
                             continue
                         for out in await asyncio.to_thread(call.controller.handle_event, event):
-                            call.outbox.put_nowait(out)
+                            if not call.terminating:  # a tool that finished while we shut down must not answer
+                                call.outbox.put_nowait(out)
                         if call.controller.closed:
                             break
                 finally:
                     writer.cancel()
                     watchdog.cancel()
+                    await asyncio.gather(writer, watchdog, return_exceptions=True)  # no task outlives the call
+        except asyncio.CancelledError:  # server shutdown / loop teardown: still close the provider session
+            shutdown = True
+            final = ("ended", "server_shutdown")
         except Exception as exc:
             log.error("sideband failed: %s", type(exc).__name__)
             call.attach_failed = not call.attached.is_set()
             final = ("failed", "sideband_error")
         finally:
             call.attached.set()
-            if call.cancel_requested and final[0] == "ended":
-                final = ("cancelled", "cancelled_by_user")
+            self._begin_termination(call, "sideband_lost")  # nothing may run on a call whose socket is gone
+            if not call.controller.closed and not call.close_sent:
+                # socket vanished before we could say session.close; on shutdown do not wait for the reply
+                await self._force_close_provider(call, wait=0 if shutdown else self.FORCE_CLOSE_WAIT_S)
+            if final[0] == "ended":
+                if call.cancel_requested:
+                    final = ("cancelled", "cancelled_by_user")
+                else:
+                    final = ("ended", call.term_reason if call.term_reason not in (None, "sideband_lost") else
+                             ("session_closed" if call.controller.closed else "sideband_lost"))
             await self._finish(call, *final)
+
+    async def _force_close_provider(self, call: CallState, wait: float | None = None) -> None:
+        """The sideband is gone but the provider session may still be open (and billing). Re-attach and send the
+        supported `session.close`. Bounded: CLOSE_RETRIES attempts, each limited by FORCE_CLOSE_WAIT_S."""
+        if not call.session_id:
+            return
+        url = SIDEBAND_URL.format(session_id=call.session_id)
+        headers = {"Authorization": f"Bearer {self.settings.openai_api_key}"}
+        for attempt in range(self.CLOSE_RETRIES):
+            try:
+                async with self._connect(url, headers) as ws:
+                    await ws.send(json.dumps({"type": "session.close", "event_id": "close_forced"}))
+                    call.close_sent = True
+                    if wait:
+                        try:
+                            await asyncio.wait_for(self._await_closed(call, ws), wait)
+                        except asyncio.TimeoutError:
+                            pass
+                    return
+            except Exception as exc:
+                log.error("forced close attempt %d failed: %s", attempt + 1, type(exc).__name__)
+                await asyncio.sleep(self.CLOSE_RETRY_DELAY_S)
+        log.error("could not close provider session; it will end by the provider's own timeout")
+
+    async def _await_closed(self, call: CallState, ws) -> None:
+        async for raw in ws:
+            try:
+                event = json.loads(raw)
+            except (TypeError, ValueError):
+                continue
+            if event.get("type") == "session.closed":
+                call.controller.closed, call.controller.usage = True, event.get("usage")
+                return
 
     async def _writer(self, call: CallState, ws) -> None:
         while True:
-            await ws.send(json.dumps(await call.outbox.get()))
+            msg = await call.outbox.get()
+            if call.terminating and msg.get("type") != "session.close":
+                continue  # defence in depth: only the close goes out once shutdown began
+            await ws.send(json.dumps(msg))
+            if msg.get("type") == "session.close":
+                call.close_sent = True
 
     async def _watchdog(self, call: CallState, ws) -> None:
-        """Cost + safety: close the call on cancel/end, when the browser vanishes, or at the time cap."""
+        """Cost + safety: closes the call on cancel/end (immediately, via call.wake), when the browser vanishes,
+        when the restaurant is archived, or at the time cap. Exactly one session.close is queued."""
         s = self.settings
-        reason = None
-        while reason is None:
-            await asyncio.sleep(0.5)
+        next_check = time.monotonic() + self.RESTAURANT_CHECK_S
+        while not call.terminating:
+            try:
+                await asyncio.wait_for(call.wake.wait(), 0.5)
+            except asyncio.TimeoutError:
+                pass
+            if call.terminating:
+                break
             now = time.monotonic()
-            if call.cancel_requested:
-                reason = "cancelled"
-            elif call.end_requested:
-                reason = "ended_by_user"
-            elif now - call.started > s.max_call_seconds:
-                reason = "max_duration"
+            if now - call.started > s.max_call_seconds:
+                self._begin_termination(call, "max_duration")
             elif call.greeted and now - call.last_seen > s.idle_timeout_seconds:
-                reason = "browser_gone"
-        call.outbox.put_nowait({"type": "session.close", "event_id": f"close_{reason}"})
-        for _ in range(30):  # wait up to 15s for session.closed (lets in-flight work drain)
+                self._begin_termination(call, "browser_gone")
+            elif not call.greeted and now - call.started > self.READY_TIMEOUT_S:
+                self._begin_termination(call, "never_ready")
+            elif now >= next_check:
+                next_check = now + self.RESTAURANT_CHECK_S
+                if not await asyncio.to_thread(self._restaurant_active, call.restaurant["_id"]):
+                    self._begin_termination(call, "restaurant_unavailable")
+        call.outbox.put_nowait({"type": "session.close", "event_id": f"close_{call.term_reason}"})
+        for _ in range(int(self.SESSION_CLOSED_WAIT_S / 0.5)):  # wait for session.closed (final usage)
             if call.controller.closed:
                 return
             await asyncio.sleep(0.5)
         await ws.close()
 
     async def _finish(self, call: CallState, status: str, reason: str) -> None:
+        """Idempotent: the first caller wins, later signals (session.closed racing a timeout, ...) are no-ops."""
         if call.status in ("ended", "failed", "cancelled"):
             return
         call.status = status
-        self.calls.pop(call.call_id, None)
-        await asyncio.to_thread(self.db.voice_sessions.update_one, {"_id": call.call_id}, {"$set": {
-            "status": status, "end_reason": reason, "ended_at": datetime.now(timezone.utc), "usage": call.controller.usage}})
+        self.calls.pop(call.call_id, None)  # releases the concurrency slot
+        self._begin_termination(call, reason)
+        await self._db_update(call.call_id, {
+            "status": status, "end_reason": reason, "ended_at": datetime.now(timezone.utc), "usage": call.controller.usage})
