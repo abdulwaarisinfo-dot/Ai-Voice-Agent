@@ -6,8 +6,18 @@ from ..money import format_money
 from ..models.schemas import MenuItemIn
 
 
-def get_restaurant(db, restaurant_id: str) -> dict | None:
-    return db.restaurants.find_one({"_id": restaurant_id})
+ARCHIVED = "archived"
+
+
+def is_active(restaurant: dict | None) -> bool:
+    """Records created before the `status` field existed have none: they are active."""
+    return restaurant is not None and restaurant.get("status") != ARCHIVED
+
+
+def get_restaurant(db, restaurant_id: str, include_archived: bool = False) -> dict | None:
+    """Archived restaurants are invisible by default, so they can take no new calls, logins or orders."""
+    doc = db.restaurants.find_one({"_id": restaurant_id})
+    return doc if include_archived or is_active(doc) else None
 
 
 def public_item(doc: dict, currency: str) -> dict:
@@ -55,3 +65,10 @@ def set_availability(db, restaurant: dict, item_id: str, available: bool) -> dic
         return_document=True,
     )
     return public_item(doc, restaurant["currency"]) if doc else None
+
+
+def delete_item(db, restaurant: dict, item_id: str) -> bool:
+    """Hard-delete one menu item. Orders keep their own name/price snapshot, so history is unaffected;
+    a pending order that still references the item fails re-pricing and cannot be confirmed."""
+    res = db.menu_items.delete_one({"_id": item_id, "restaurant_id": restaurant["_id"]})
+    return res.deleted_count == 1
