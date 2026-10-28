@@ -10,7 +10,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from .config import Settings, get_settings
 from .database import connect, init_indexes
 from .money import format_money
-from .routers import menu, orders, pages, voice
+from .routers import menu, orders, pages, restaurants, voice
 from .security import RateLimiter
 from .services.live_session import LiveService
 
@@ -54,7 +54,7 @@ def create_app(settings: Settings | None = None, db=None, live_client=None, side
         return response
 
     app.mount("/static", StaticFiles(directory=str(BASE / "static")), name="static")
-    for r in (pages.router, menu.router, voice.router, orders.router):
+    for r in (pages.router, menu.router, restaurants.router, voice.router, orders.router):
         app.include_router(r)
     return app
 
