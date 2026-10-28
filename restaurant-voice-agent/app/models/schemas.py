@@ -2,7 +2,7 @@
 import re
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 MAX_QTY = 20
 MAX_LINES = 30
@@ -72,6 +72,58 @@ class CustomerIn(BaseModel):
 
 class LoginIn(BaseModel):
     restaurant_id: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=200)
+
+
+RESTAURANT_ID_RE = r"^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$"
+
+
+class RestaurantCreateIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(pattern=RESTAURANT_ID_RE)
+    name: str = Field(min_length=1, max_length=80)
+    currency: str = Field(pattern=r"^[A-Z]{3}$")
+    delivery_fee_minor: int = Field(default=0, ge=0, le=10_000_000)
+    accepts_pickup: bool = True
+    accepts_delivery: bool = True
+    owner_password: str = Field(min_length=8, max_length=200)
+
+    @field_validator("name")
+    @classmethod
+    def _strip(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("name must not be blank")
+        return v
+
+
+class RestaurantUpdateIn(BaseModel):
+    """Only these fields are editable. Anything else (_id, owner_password_hash, status, currency...) is a 422.
+    Currency is fixed after creation: changing it would silently re-label every stored price."""
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = Field(default=None, min_length=1, max_length=80)
+    delivery_fee_minor: int | None = Field(default=None, ge=0, le=10_000_000)
+    accepts_pickup: bool | None = None
+    accepts_delivery: bool | None = None
+
+    @field_validator("name")
+    @classmethod
+    def _strip(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        v = v.strip()
+        if not v:
+            raise ValueError("name must not be blank")
+        return v
+
+
+class RestaurantDeleteIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    confirm_id: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=200)
+
+
+class AdminLoginIn(BaseModel):
     password: str = Field(min_length=1, max_length=200)
 
 
