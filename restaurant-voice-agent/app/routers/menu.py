@@ -68,3 +68,11 @@ def availability(request: Request, item_id: str, body: AvailabilityIn, rid: str 
     if item is None:
         raise HTTPException(404, "Item not found")
     return item
+
+
+@router.delete("/menu/items/{item_id}", dependencies=[Depends(require_same_origin)])
+def delete_item(request: Request, item_id: str, rid: str = Depends(require_owner)):
+    # Scoped by BOTH _id and the owner's restaurant_id: an id from another restaurant is simply "not found".
+    if not menu_service.delete_item(request.app.state.db, _owner_restaurant(request, rid), item_id):
+        raise HTTPException(404, "Item not found")
+    return {"ok": True, "id": item_id}
