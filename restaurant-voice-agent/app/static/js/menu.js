@@ -1,11 +1,11 @@
-/* Menu page: loads the menu from the API; owners can add/edit items and mark them (un)available. */
+/* Menu page: loads the menu from the API; owners can add/edit/delete items and mark them (un)available. */
 (() => {
   'use strict';
   const root = document.getElementById('menu-root');
   if (!root) return;
   const $ = (id) => document.getElementById(id);
   const rid = root.dataset.restaurantId;
-  let currency = 'PKR', items = [], owner = false;
+  let currency = 'PKR', items = [], owner = false, busy = false;
 
   async function api(path, opts = {}) {
     const res = await fetch(path, { credentials: 'same-origin', ...opts,
@@ -40,7 +40,8 @@
           const edit = text('button', 'btn small', 'Edit'); edit.type = 'button'; edit.onclick = () => fill(i);
           const tog = text('button', 'btn small', i.available ? 'Mark unavailable' : 'Mark available'); tog.type = 'button';
           tog.onclick = () => toggle(i);
-          row.append(edit, tog); right.appendChild(row);
+          const del = text('button', 'btn small', 'Delete'); del.type = 'button'; del.onclick = () => remove(i);
+          row.append(edit, tog, del); right.appendChild(row);
         }
         card.append(left, right); list.appendChild(card);
       });
@@ -61,9 +62,23 @@
     $('f-name').focus();
   }
   function reset() { $('item-form').reset(); $('f-id').value = ''; $('item-form-title').textContent = 'Add item'; $('item-error').hidden = true; }
+  function notice(msg) { $('menu-status').textContent = msg; }
   async function toggle(i) {
-    try { await api('/api/menu/items/' + encodeURIComponent(i.id) + '/availability', { method: 'PATCH', body: JSON.stringify({ available: !i.available }) }); await load(); }
-    catch (e) { $('menu-status').textContent = e.message; }
+    if (busy) return; busy = true;
+    try { await api('/api/menu/items/' + encodeURIComponent(i.id) + '/availability', { method: 'PATCH', body: JSON.stringify({ available: !i.available }) }); await load(); notice(i.name + ' is now ' + (i.available ? 'unavailable' : 'available') + '.'); }
+    catch (e) { notice(e.message); }
+    finally { busy = false; }
+  }
+  async function remove(i) {
+    if (busy) return;
+    if (!window.confirm('Delete "' + i.name + '"? This cannot be undone.')) return;   // destructive: always confirm
+    busy = true;
+    try {
+      await api('/api/menu/items/' + encodeURIComponent(i.id), { method: 'DELETE' });
+      if ($('f-id').value === i.id) reset();                       // don't leave a deleted item in the edit form
+      await load(); notice('Deleted "' + i.name + '".');
+    } catch (e) { notice(e.status === 404 ? 'That item no longer exists. The menu was refreshed.' : e.message); await load(); }
+    finally { busy = false; }
   }
 
   $('login-form').addEventListener('submit', async (ev) => {
@@ -76,12 +91,16 @@
   $('f-reset').addEventListener('click', reset);
   $('item-form').addEventListener('submit', async (ev) => {
     ev.preventDefault(); const err = $('item-error'); err.hidden = true;
+    if (busy) return;                                              // duplicate-submission guard
     const id = $('f-id').value;
     const body = JSON.stringify({ name: $('f-name').value, description: $('f-desc').value, category: $('f-cat').value,
       price_minor: Math.round(parseFloat($('f-price').value) * 100), available: $('f-avail').checked,
       options: $('f-opts').value.split(',').map((s) => s.trim()).filter(Boolean) });
-    try { await api(id ? '/api/menu/items/' + encodeURIComponent(id) : '/api/menu/items', { method: id ? 'PUT' : 'POST', body }); reset(); await load(); }
-    catch (e) { err.textContent = e.message; err.hidden = false; }
+    const btn = $('item-form').querySelector('button[type=submit]');
+    busy = true; btn.disabled = true;
+    try { await api(id ? '/api/menu/items/' + encodeURIComponent(id) : '/api/menu/items', { method: id ? 'PUT' : 'POST', body }); reset(); await load(); notice(id ? 'Item saved.' : 'Item added.'); }
+    catch (e) { err.textContent = e.message; err.hidden = false; }    // the form keeps the user's input on failure
+    finally { busy = false; btn.disabled = false; }
   });
 
   api('/api/owner/me').then((m) => { if (m.restaurant_id === rid) setOwner(true); }).catch(() => setOwner(false)).finally(load);
