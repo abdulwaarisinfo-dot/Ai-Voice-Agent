@@ -262,9 +262,10 @@ class LiveService:
     def _restaurant_active(self, restaurant_id: str) -> bool:
         return menu_service.get_restaurant(self.db, restaurant_id) is not None
 
-    async def _db_update(self, call_id: str, changes: dict) -> None:
+    async def _db_update(self, call_id: str, changes: dict, only_if_status: str | None = None) -> None:
+        query = {"_id": call_id} if only_if_status is None else {"_id": call_id, "status": only_if_status}
         try:
-            await asyncio.to_thread(self.db.voice_sessions.update_one, {"_id": call_id}, {"$set": changes})
+            await asyncio.to_thread(self.db.voice_sessions.update_one, query, {"$set": changes})
         except Exception as exc:  # a database hiccup must never keep a paid session open
             log.error("voice_sessions update failed: %s", type(exc).__name__)
 
@@ -315,13 +316,15 @@ class LiveService:
             await self._finish(call, "failed", "create_failed")
             raise CallError(502, "The voice service is unavailable right now.")
 
+        # The sideband task is the ONLY thing that can close this provider session, so it is started before any
+        # await that a cancelled request could interrupt (otherwise the session would be orphaned).
+        call.task = self._spawn(self._run_sideband(call))
         try:
             if not call.terminating:
                 call.status = "connecting"
-            await self._db_update(call_id, {"openai_session_id": call.session_id,
-                                            "status": call.status if call.status != "creating" else "connecting"})
-            call.task = self._spawn(self._run_sideband(call))
-            if call.terminating:  # cancelled / restaurant archived while OpenAI was creating the session
+            await self._db_update(call_id, {"openai_session_id": call.session_id})
+            await self._db_update(call_id, {"status": "connecting"}, only_if_status="creating")
+            if call.terminating and not call.attach_failed:  # cancelled / archived while OpenAI was creating the session
                 raise CallError(409, "Call was cancelled.")  # the sideband task will close the new session
             try:
                 await asyncio.wait_for(call.attached.wait(), 12)
@@ -488,6 +491,16 @@ class LiveService:
                 call.close_sent = True
 
     async def _watchdog(self, call: CallState, ws) -> None:
+        try:
+            await self._watchdog_loop(call, ws)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # never stop guarding silently: an unexpected failure closes the call
+            log.error("watchdog failed: %s", type(exc).__name__)
+            self._begin_termination(call, "watchdog_error")
+            call.outbox.put_nowait({"type": "session.close", "event_id": "close_watchdog_error"})
+
+    async def _watchdog_loop(self, call: CallState, ws) -> None:
         """Cost + safety: closes the call on cancel/end (immediately, via call.wake), when the browser vanishes,
         when the restaurant is archived, or at the time cap. Exactly one session.close is queued."""
         s = self.settings
@@ -508,7 +521,12 @@ class LiveService:
                 self._begin_termination(call, "never_ready")
             elif now >= next_check:
                 next_check = now + self.RESTAURANT_CHECK_S
-                if not await asyncio.to_thread(self._restaurant_active, call.restaurant["_id"]):
+                try:
+                    active = await asyncio.to_thread(self._restaurant_active, call.restaurant["_id"])
+                except Exception as exc:  # unknown != archived: keep the call, keep the time caps running
+                    log.error("restaurant check failed: %s", type(exc).__name__)
+                    active = True
+                if not active:
                     self._begin_termination(call, "restaurant_unavailable")
         call.outbox.put_nowait({"type": "session.close", "event_id": f"close_{call.term_reason}"})
         for _ in range(int(self.SESSION_CLOSED_WAIT_S / 0.5)):  # wait for session.closed (final usage)
