@@ -115,11 +115,15 @@
   }
 
   // Aborting fetch does NOT cancel server-side work, so tell the server explicitly.
+  // If the request cannot be sent (offline, unload), it is retried once when the network returns. The server's
+  // own idle / max-duration / never-ready timers remain the fallback if the browser never comes back.
+  let pendingNotify = null;
   function notifyServer(c) {
     const p = c.secret
       ? api('/api/call/end', { method: 'POST', body: { client_call_id: c.id }, secret: c.secret, keepalive: true })
       : api('/api/call/cancel', { method: 'POST', body: { client_call_id: c.id }, keepalive: true });
-    p.catch(() => { /* best effort */ });
+    p.then(() => { if (pendingNotify && pendingNotify.id === c.id) pendingNotify = null; })
+      .catch((err) => { if (!err || !err.status) pendingNotify = c; });  // network failure only; HTTP errors are final
   }
 
   function fail(c, msg) {
@@ -298,6 +302,17 @@
   el.end.addEventListener('click', endCall);
   el.cancel.addEventListener('click', cancelClicked);
   window.addEventListener('pagehide', () => { if (ctx && !ctx.disposed) teardown(ctx, { notify: true }); });
+  // Network lost: release the microphone and connection now instead of waiting for ICE to time out.
+  window.addEventListener('offline', () => {
+    if (ctx && !ctx.disposed && (state === 'connecting' || state === 'connected')) {
+      fail(ctx, 'You are offline, so the call was ended. If you did not see an order confirmation, your order was not placed.');
+    }
+  });
+  window.addEventListener('online', () => { const c = pendingNotify; pendingNotify = null; if (c) notifyServer(c); });
+  // Restored from the back/forward cache: the old call was torn down on pagehide, so never show it as live.
+  window.addEventListener('pageshow', (ev) => {
+    if (ev.persisted && (!ctx || ctx.disposed) && state !== 'idle') setState('idle', '');
+  });
   setState('idle');
   if (!configured()) el.call.disabled = true;                              // after setState, which would re-enable it
   if (!supported()) { el.warn.hidden = false; el.call.disabled = true; }   // after setState, which would re-enable it
