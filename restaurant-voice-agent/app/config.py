@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     app_env: str = "development"
     session_secret: str = ""
     owner_password: str = ""
+    admin_password: str = ""  # optional platform admin (create/list/archive restaurants); empty = disabled
     max_call_seconds: int = 600
     max_concurrent_calls: int = 5
     idle_timeout_seconds: int = 30  # no heartbeat from the browser -> server closes the call
