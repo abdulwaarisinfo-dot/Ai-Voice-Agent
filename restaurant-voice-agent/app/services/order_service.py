@@ -53,7 +53,7 @@ def price_lines(db, restaurant: dict, lines: list[OrderLineIn]) -> list[dict]:
     for line in lines:
         doc = docs.get(line.item_id)
         if doc is None:
-            raise OrderError("unknown_item", f"Item '{line.item_id}' is not on this restaurant's menu. Use get_menu to find valid item_ids.")
+            raise OrderError("unknown_item", f"Item '{line.item_id}' is not on this restaurant's menu. Use find_menu_item/get_menu to get valid item_ids. If the customer asked for a dish that is not on the menu, tell them politely it is not available; never invent an item.")
         if not doc["available"]:
             raise OrderError("item_unavailable", f"{doc['name']} is currently unavailable.")
         allowed = {o.lower(): o for o in doc.get("options", [])}
