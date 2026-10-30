@@ -4,6 +4,7 @@
   --radius:10px;
 }
 *{box-sizing:border-box}
+[hidden]{display:none !important}  /* class display rules (.stack, .row...) must not override the hidden attribute */
 body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
 .skip{position:absolute;left:-999px}.skip:focus{left:8px;top:8px;background:#fff;padding:8px;z-index:9}
 header.site{display:flex;flex-wrap:wrap;gap:12px;justify-content:space-between;align-items:center;padding:14px 20px;background:var(--brand);color:var(--brand-ink)}
