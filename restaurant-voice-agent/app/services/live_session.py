@@ -32,8 +32,12 @@ SIDEBAND_URL = "wss://api.openai.com/v1/live/sessions/{session_id}/attach"
 
 TOOLS = [
     {"type": "function", "name": "get_menu",
-     "description": "Get this restaurant's menu with verified prices, availability and customization options. Call before answering menu questions.",
+     "description": "Get this restaurant's full menu (verified prices, availability, options). Use for 'what do you have / what's on the menu' questions. If menu_empty is true there is NO menu: say you cannot take orders or quote prices.",
      "parameters": {"type": "object", "properties": {"category": {"type": "string", "description": "Optional category filter"}}, "additionalProperties": False}},
+    {"type": "function", "name": "find_menu_item",
+     "description": "Check whether ONE dish is on the menu and get its verified price. Call this every time the customer asks if a dish exists, asks its price/details, or wants to order a dish by name. Answer ONLY from the result.",
+     "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "Dish name as the customer said it"}},
+                    "required": ["query"], "additionalProperties": False}},
     {"type": "function", "name": "set_order_items",
      "description": "Replace the order's items. Server prices everything from the database.",
      "parameters": {"type": "object", "properties": {"items": {"type": "array", "items": {"type": "object", "properties": {
@@ -67,6 +71,26 @@ def build_session_config(settings: Settings, restaurant: dict) -> dict:
             "instructions": backend_instructions(restaurant["name"]),
             "tools": TOOLS, "tool_choice": "auto", "parallel_tool_calls": False}},
     }
+
+
+def _search_instruction(r: dict) -> str:
+    """Plain-language rule for the model, matched to what the DATABASE said. Keeps answers truthful."""
+    q = r["query"]
+    if r.get("menu_empty"):
+        return ("There is NO menu available right now. Tell the customer politely that you cannot take orders or give prices at the moment. "
+                "Do not invent anything.")
+    if r.get("query_unclear"):
+        return "The dish name was unclear. Ask the customer to repeat which dish they mean."
+    if r["match"] == "none":
+        cats = ", ".join(r["categories"])
+        return (f"'{q}' is NOT on our menu. Say so plainly and politely (e.g. 'Sorry, {q} is not on our menu' / "
+                f"'Maaf kijiye, {q} hamare menu mein nahi hai'). Do NOT guess a price, do NOT offer it, do NOT invent substitutes. "
+                f"You may offer to read what we do have. Menu categories: {cats}.")
+    if r["match"] == "similar":
+        return (f"No dish called '{q}', but these similar dishes ARE on the menu. Ask the customer if they meant one of them. "
+                "Do not say the requested dish exists. Quote price_spoken only for the dish they confirm.")
+    return ("Use only these results. Say the dish name and price_spoken exactly as returned. If more than one match, list them with prices "
+            "and ask which one. If available is false, say it is currently unavailable and do not take it in an order.")
 
 
 class CallError(Exception):
@@ -147,9 +171,22 @@ class CallController:
             raise OrderError("unknown_restaurant", "Restaurant not found.")
         if name == "get_menu":
             items = menu_service.list_menu(self.db, restaurant, args.get("category"))
-            return {"restaurant": restaurant["name"], "currency": restaurant["currency"],
-                    "delivery_fee": order_service.format_money(restaurant.get("delivery_fee_minor", 0), restaurant["currency"]),
-                    "items": [{k: i[k] for k in ("id", "name", "description", "category", "price", "available", "options")} for i in items]}
+            fee = order_service.format_money(restaurant.get("delivery_fee_minor", 0), restaurant["currency"])
+            result = {"restaurant": restaurant["name"], "currency": restaurant["currency"], "delivery_fee": fee,
+                      "item_count": len(items), "menu_empty": not items,
+                      "items": [{k: i[k] for k in ("id", "name", "description", "category", "price", "price_spoken", "available", "options")} for i in items]}
+            if not items:
+                result["instruction"] = ("The menu has no items" + (f" in category '{args.get('category')}'" if args.get("category") else "") +
+                                         ". Tell the customer politely that you do not have this on the menu right now. "
+                                         "Do NOT invent dishes or prices and do NOT take an order for anything.")
+            return result
+        if name == "find_menu_item":
+            query = str(args.get("query", "")).strip()
+            if not query:
+                raise OrderError("invalid_input", "Ask the customer which dish they mean.")
+            result = menu_service.search_menu(self.db, restaurant, query)
+            result["instruction"] = _search_instruction(result)
+            return result
         if name == "set_order_items":
             parsed = OrderItemsIn.model_validate(args)
             order_service.set_items(self.db, self.restaurant_id, self.call_id, parsed.items)
